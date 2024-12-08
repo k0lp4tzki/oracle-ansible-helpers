@@ -1,0 +1,99 @@
+---
+- name: Register oracle_home
+  hosts: dbservers
+  become: yes
+
+  vars_files:
+    - ../../vaults/vault01.yml
+
+  vars:
+    oracle_base: "/oracle"
+    db_instances:
+      - { name: 'DEVDB01', sid: 'DEVBDB01', home: '/oracle/_STAGE/test', datafiles: '/oracle/oradata' } 
+    install_path: "/oracle/_STAGE"
+    install_base_file: "LINUX.X64_193000_db_home.zip"
+    install_patch_file: "p36912597_190000_Linux-x86-64.zip"
+    patch_number: "36912597"
+    install_opatch_file: "p6880880_190000_Linux-x86-64.zip"
+    ansible_become_pass: "{{ oracle_password }}"
+    dbname: "DEVDB01"
+    owner: "oracle"
+    create_container_bool: "true"
+
+
+  tasks:
+
+  - name: Check or install preinstall packages
+    ansible.builtin.dnf:
+      name: oracle-database-preinstall-19c.x86_64
+      state: present
+    become: yes
+
+  - name: Set current setting as fact
+    ansible.builtin.set_fact:
+      oracle_home: "{{ item.home }}"
+      db_name: "{{ item.name }}"
+      db_sid: "{{ item.sid }}"
+      datafiles: "{{ item.datafiles }}"
+    with_items: "{{ db_instances }}"
+
+  - name: Ensure required directories exist
+    file:
+      path: "{{ item }}"
+      state: directory
+      owner: oracle
+      group: oinstall
+      mode: '0775' 
+    loop:
+      - "{{ oracle_home }}"
+      - "{{ datafiles }}"
+
+  - name: Check if oracle binary exists
+    ansible.builtin.stat:
+      path: "{{ oracle_home }}/bin/oracle"
+    register: oracle_bin_check
+
+  - name: Unpack Oracle binaries
+    unarchive:
+      src: "{{ install_path }}/{{ install_base_file }}"
+      dest: "{{ item.home }}"
+      remote_src: yes
+      owner: oracle
+      group: oinstall
+    with_items:
+      - "{{ db_instances }}"
+    when: not oracle_bin_check.stat.exists
+    become_user: "{{ owner }}"
+
+  - name: Prepare OPatch
+    ansible.builtin.file:
+      path: "{{ oracle_home }}/OPatch"
+      state: absent
+
+  - name: Unpack OPatch
+    unarchive:
+      src: "{{ install_path }}/{{ install_opatch_file }}"
+      dest: "{{ item.home }}"
+      remote_src: yes
+      owner: oracle
+      group: oinstall
+    with_items:
+      - "{{ db_instances }}"
+    become_user: "{{ owner }}"
+
+  - name: Unpack RU
+    unarchive:
+      src: "{{ install_path }}/{{ install_patch_file }}"
+      dest: "{{ install_path }}"
+      remote_src: yes
+      owner: oracle
+      group: oinstall
+    become_user: "{{ owner }}"
+
+  - name: Register Oracle Home
+    ansible.builtin.shell: "{{ item }}"
+    become_user: "{{ owner }}"
+    loop:
+      - "{{ oracle_home }}/runInstaller -applyRU {{ install_path }}/{{ patch_number }}/ -ignorePrereqFailure -silent -responseFile  /oracle/_STAGE/db.rsp"
+    environment: 
+      CV_ASSUME_DISTID: OEL8
