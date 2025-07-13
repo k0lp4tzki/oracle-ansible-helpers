@@ -1,0 +1,91 @@
+## This is a so called "Task File" you need to invoke it by a "main" playbook with 
+###   - name: Create ESXi snapshot before applying changes
+###   include_role:
+###     name: a8n.vm_snapshot
+### or as a role
+
+      
+- name: Get VM ID from name
+  shell: |
+    vim-cmd vmsvc/getallvms | grep -w '{{ vm_name }}' | awk '{print $1}'
+  register: vmid_result
+  changed_when: false
+  delegate_to: "{{ esxi_host }}"
+  remote_user: root
+
+- name: Set VM ID fact
+  set_fact:
+    vm_id: "{{ vmid_result.stdout | trim }}"
+
+- name: Get raw snapshot data
+  shell: vim-cmd vmsvc/snapshot.get {{ vm_id }}
+  register: snapshot_raw
+  changed_when: false
+  delegate_to: "{{ esxi_host }}"
+  remote_user: root
+
+- name: Check if any snapshots exist
+  set_fact:
+    snapshot_exists: "{{ 'Snapshot Name' in (snapshot_raw.stdout | default('')) }}"
+
+- name: Extract snapshot IDs
+  shell: |
+    echo "{{ snapshot_raw.stdout }}" | awk '/Snapshot Id/ {print $NF}'
+  register: snapshot_ids
+  when: snapshot_exists
+  changed_when: false
+  delegate_to: "{{ esxi_host }}"
+  remote_user: root
+
+- name: Determine oldest snapshot ID
+  set_fact:
+    snapshot_id_oldest: "{{ (snapshot_ids.stdout_lines | map('int') | list) | min }}"
+  when: snapshot_exists and snapshot_ids.stdout_lines | length > 0
+
+
+- name: Extract creation time of oldest snapshot only
+  shell: |
+    echo "{{ snapshot_raw.stdout }}" | awk -v sid={{ snapshot_id_oldest }} '
+      $0 ~ "Snapshot Id" && $NF == sid {found=1}
+      found && /Snapshot Created On/ {print $NF; exit}
+    '
+  register: snapshot_time
+  delegate_to: "{{ esxi_host }}"
+  remote_user: root
+  when: snapshot_exists
+
+
+- name: Convert snapshot time to seconds since epoch
+  shell: date -d "{{ snapshot_time.stdout }}" +%s
+  register: snapshot_epoch
+  delegate_to: "{{ esxi_host }}"
+  remote_user: root
+  when: snapshot_exists
+
+- name: Get current time in seconds
+  command: date +%s
+  register: now_epoch
+  when: snapshot_exists
+  delegate_to: "{{ esxi_host }}"
+  remote_user: root
+
+- name: Determine if snapshot is older than 4 hours
+  set_fact:
+    snapshot_too_old: "{{ (now_epoch.stdout | int) - (snapshot_epoch.stdout | int) > 14400 }}"
+  when: snapshot_exists
+
+- name: Remove oldest snapshot
+  shell: vim-cmd vmsvc/snapshot.remove {{ vm_id }} {{ snapshot_id_oldest }}
+  when: snapshot_exists and snapshot_too_old
+  delegate_to: "{{ esxi_host }}"
+  remote_user: root
+
+- name: Create new snapshot
+  shell: >
+    vim-cmd vmsvc/snapshot.create {{ vm_id }}
+    "ANSIBLE_SNAPSHOT_{{ lookup('password', '/dev/null length=6 chars=ascii_letters') }}"
+    "Snapshot by Ansible"
+    0 0
+  delegate_to: "{{ esxi_host }}"
+  remote_user: root
+  when: not snapshot_exists or snapshot_too_old
