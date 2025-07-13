@@ -1,6 +1,6 @@
 ## This is a so called "Task File" you need to invoke it by a "main" playbook with 
 ###   - name: Create ESXi snapshot before applying changes
-###   include_role:
+###   include_task:
 ###     name: a8n.vm_snapshot
 ### or as a role
 
